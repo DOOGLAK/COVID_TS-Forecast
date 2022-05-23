@@ -1,0 +1,1215 @@
+---
+title: "COVID Forecasting"
+author: Douglas Bowen
+date: ""
+tags: [nothing, nothingness]
+abstract: |
+  The end goal of this project was to determine an appropriate model for the number of active COVID-19 cases, ICU beds in use, and Ventilators in use in Ontario. We then will then forecast it. An important secondary goal of this project that builds off this forecast is in checking that ICU and Ventilator usage does not reach critical capacity.
+  
+  The methods that were used in the process of achieving our end goal involved (a) transforming the data into a stationary series, (b) selecting candidate models and performing diagnostics on each, (c) selecting a final model for each dataset, and (d) performing a forecast with said finalized model.
+  
+  Code is unpolished.
+
+output:
+  pdf_document:
+    toc: false
+    toc_depth: 2
+    number_sections: true
+urlcolor: blue
+---
+\newpage
+
+```{r Setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, tidy.opts=list(width.cutoff=80),tidy=TRUE)
+#install.packages('TSA')
+#install.packages('urca')
+#install.packages('xtable')
+#install.packages('kableExtra')
+#install.packages('formatR')
+#install.packages('tinytex')
+#install.packages('tidyverse')
+#install.packages('ggplot2')
+#install.packages('readxl')
+#install.packages('xts')
+#install.packages('openxlsx')
+#install.packages('forecast')
+library(TSA)
+library(lattice)
+#library(urca)
+library(tseries)
+#library(pracma)
+library(knitr)
+library(kableExtra)
+#library(xtable)
+#library(formatR)
+#library(tidyverse)
+#library(ggplot2)
+#library(readxl)
+#library(xts)
+library(openxlsx)
+
+#library(quantmod)
+#library(readr)
+#library(stats)
+library(forecast)
+#unloadNamespace("forecast")
+#detach("package:forecast", unload=TRUE)
+
+```
+
+```{r}
+#Packages <- list("URCA")
+#bquote(library(.(Packages)))
+
+#if(!require(quantmod)) install.packages("quantmod")
+
+```
+
+
+\newpage
+
+# Introduction
+## Overview
+Our project is focused on analyzing different time series derived from various COVID-19 metrics; specifically, active COVID-19 cases, ICU beds in use, and Ventilators in use.
+In analyzing these time series, we hope to create models that can accurately predict future values of the above metrics.
+Of special importance is the ICU beds in use and Ventilators in use, explained below.
+
+## COVID-19
+### Disease Info
+COVID-19 is an infectious disease that originated in Wuhan, China, on December 31st, 2019 - nearly 1.5 years ago. Specifically, it is a respitory disease.
+
+Most individuals who contact COVID-19 experience mild to moderate respiratory illness and recover without requiring special treatment; however, older individuals and those with underlying medical conditions are much more likely to develop serious complications from the disease, often requiring hospitalization. Age, obesity, auto-immune diseases, diabetes, lung damage, and cancer are all factors that impact the severity of the disease.
+
+Of equal concern is the fact that young adults and children often present asymptomatically, but spread the disease unknowingly. This, combined with an $R_{0}$ of 5.7$^{[1]}$, makes the disease very contagious. An $R_{0}$ of 5.7 means that for one person who contracts COVID-19, they will potentially transmit the disease to ~5.7 other individuals.
+
+Transmission occurs through droplets in the air facilitated through coughing and/or sneezing.
+
+### Prevention
+The best methods of preventing the spread of COVID-19 include social distancing, practicing good hygeine, and wearing masks.
+
+## Importance of Analysis
+One of the most important metrics related to COVID-19 is critical care services (CCS) as there is a finite number of ICU beds and Ventilators available for life-saving care. If this finite limit is reached at any point, hospitals will begin having to make hard decisions -  that is, determining who will get limited beds and ventilators as they become available. Some individuals who have a small chance of recovering may be denied a spot in favour of another who has a better chance, so as to not "waste" the resource and end up with two deceased individuals as opposed to one. Elderly and those with severe complications might be passed over (and thus left to likely die) in favour of those with better chances of survival.
+
+Of course, the government of Ontario is aware of this and thus has significantly expanded CSS numbers during the COVID-19 pandemic to avoid such a scenario. But with a third wave and numerous more deadly and contagious variants, we want to see just how at-risk the province of Ontario is of reaching their limits.
+
+## Process of Analysis
+To give a brief overview of the processs taken to analyze our data, we first make our time series data stationary. From there, we select candidate models through numerous testing methods, narrow down final model choices based on more testing, and then forecast with said model.
+
+\newpage
+
+## Project Format/Outline
+### Section 1 - Introduction
+See above/Current section. Provides an overview of the project as well as relevant info on our dataset, along with why the analysis is important.
+
+### Section 2 - Data Description
+Section 2 will go over the data cleaning process, breaking the data into segments, plotting of the time series, and certain statistics.
+
+### Section 3 - Model Specification
+Secion 3 will go over our pre-model diagnostics used to create a stationary time series, and then find candidate models for further diagnostics that we can use.
+
+### Section 4 - Parameter Estimation
+Section 4 will go over parameter estimation for our candidate models; it will determine if certain coefficients are unnecessary in a model (non-significant from 0).
+
+### Section 5 - Model Diagnostics
+Section 5 will go over model diagnostics for our selected candidate models, testing the residuals for normalcy and independence of error terms through numerous methods. We will then finalize a model choice for each dataset, and discuss potential deficiencies in said models.
+
+### Section 6 - Forecasting
+Section 6 will go over our forecasted model predictions, the importance of forecasting, and compare our forecasted levels to critical levels.
+
+### Section 7 - Conclusion/Discussion
+Section 7 will summarize our report, discuss shortcomings with the analysis, and conclude our findings.
+
+\newpage
+
+```{r Basic_Data, echo=FALSE, results="hide", warning=FALSE, fig.show="hide"}
+
+# Data Taken From: https://data.ontario.ca/dataset/status-of-covid-19-cases-in-ontario
+# Critical Levels: https://news.ontario.ca/en/release/56688/ontario-significantly-expands-hospital-capacity-to-prepare-for-any-covid-19-outbreak-scenario
+
+COVID     <- read.csv("Datasets\\Project\\Canada\\COVID Cumulative.csv")#,fill=TRUE, sep=",", header=TRUE)
+
+COVID_Est <- COVID[c(389:419),]
+COVID_Est <- subset(COVID_Est, select = c(Cases, ICU, Ventilators))
+
+Full      <- COVID[-c(1:146),]
+Full      <- subset(Full, select = c(Cases, ICU, Ventilators))
+
+COVID     <- COVID[-c(1:146, 389:419),] #Removing Legacy Data - Starts July 1 2020, Ends February 28 2021 --> COVID[-c(1:146, 389:419),]
+Timeline  <- subset(COVID, select = c(Date))
+Timeline  <- as.Date(convertToDate(unlist(Timeline)),format="%y-%m-%d")
+COVID     <- subset(COVID, select = c(Cases, ICU, Ventilators))
+
+Set  <- colnames(COVID)
+
+```
+
+
+# Data Description
+The data used for this analysis consists of active COVID-19 cases, current ICU beds in use, and current Ventilators in use between January 26, 2020 and March 30, 2021 on a daily basis; hereby refered to as "Cases", "ICU Beds", and "Ventilators". This data was obtained from [Ontario.ca](https://data.ontario.ca/dataset/status-of-covid-19-cases-in-ontario "Dataset")$^{[2]}$ and compiled by the government of Ontario.
+
+## Data Scrubbing
+Due to the evolving situation with COVID-19, methods of recording data did not exist for certain datasets or were changed midway through the pandemic. In the case of ICU Beds/Ventilators, data was not recorded until April 2nd, 2020. This causes an unnatural spike in our ICU and Ventilator time-series. As a result, our adjusted timeline will be between July 1st, 2020 and March 30, 2021.
+
+## Modelling/Forecasting Segments
+Additionally, the data has also been bisected into two portions:
+
+Time Period | Data Use | Explanation
+------------|----------|-------------
+01/07/2020 - 28/02/2021 | Model Estimation | This will serve as our primary dataset which will be used to estimate models and create forecasts.
+01/03/2021 - 30/03/2021 | Forecast Accuracy | This will serve as our secondary dataset which will be used to examine the accuracy of our forecast against actual data.
+
+\newpage
+
+## Time Series
+The time series that will be used to estimate our model for Cases, ICU Beds, and Ventilators can be seen below:
+
+```{r TS_Plots, fig.height=4, fig.width=10}
+
+main_str <- list("Active Cases", "ICU Usage", "Ventilator Usage")
+ylab_str <- list("# of Cases", "# of Beds in-use", "# of Ventilators in-use")
+
+par(mfrow=c(1,3))
+
+for (i in 1:length(Set)){
+  print(
+  xyplot(as.ts(COVID[i]) ~ Timeline,
+         main=main_str[i], ylab=ylab_str[i],
+         pch = 20, col="black")
+  )
+}
+
+
+```
+
+As they all follow a very similar pattern, they likely share similar models as well.
+
+## Statistics
+Some important information in our analysis is the number of ICU beds and ventilators in Ontario. Currently, Ontario has 1,971 ICU beds equipped with ventilators$^{[3]}$, and 2,300 ICU beds in total - 1,400 of which are occupied for non-COVID cases$^{[4]}$. Thus, this is our finite limit/capacity.
+
+*It should be noted that requiring a ventilator also requires an ICU bed, but the opposite is not true - requiring an ICU bed does not necessarily require a ventilator.*
+
+\newpage
+
+# Model Specification
+
+## Pre-Model Diagnostics
+
+### Basic Information
+Before we begin the process of determining appropriate time series models, we can first look at our datasets to look for:
+
+* Non-stationarity in the Mean/Variance
+* Apparent Trends
+* Seasonality
+
+In our case, the [datasets](#time-series) clearly have a non-stationary mean and likely a non-stationary variance (indicated by variance fluctuating more heavily with higher active cases - see Dec 2020 to Feb 2021).
+
+Additionally, there appears to be a slight exponential trend in each of the datasets.
+
+There is no clear seasonality.
+
+This lack of stationarity can also be seen below in the respective ACF's, indicated by a slow decay with all spikes being significant.
+
+```{r, fig.show="hold", fig.height=4}
+
+par(mfrow=c(1,3))
+
+for (i in 1:length(Set)){
+  acf(COVID[i], main=Set[i])
+}
+
+```
+
+\newpage
+
+### Non-Constant Variance Transformation
+As our variance appears to be non-stationary (non-constant), we must first transform our datasets to make variance stationary. To do this, we will use a Box-Cox transformation that utilizes an estimated transformation parameter {$\lambda$}. The new transformed datasets are:
+
+```{r, fig.show="hold", fig.height=4}
+
+par(mfrow=c(2,3))
+
+BoxCox <- COVID
+BoxCox_Est <- COVID_Est
+BoxCox_Full <- Full
+
+#Creating the BoxCox Transformed Data
+for (i in 1:length(Set)){
+  Lambda <- BoxCox.lambda(as.ts(COVID[i]))
+  BoxCox[i] <- unlist((COVID[i]^Lambda - 1)/Lambda)
+  BoxCox_Est[i] <- unlist((COVID_Est[i]^Lambda - 1)/Lambda)
+  BoxCox_Full[i] <- unlist((Full[i]^Lambda - 1)/Lambda)
+}
+
+for (i in 1:length(Set)){
+  #plot(as.ts(BoxCox[Set[i]]), main=sprintf("%s BoxCox",Set[i])) #OLD VERSION, NO DATES
+  plot(as.ts(BoxCox[i]) ~ as.Date(Timeline, format="%y-%m-%d"), xaxt="n", main=sprintf("%s BoxCox",Set[i]), ylab="#", xlab="Timeline", pch=20)
+  axis(1, Timeline, format(Timeline, "%b"), tick=F)
+}
+
+for (i in 1:length(Set)){
+  acf(as.ts(BoxCox[i]), main=sprintf("%s BoxCox",Set[i]))
+}
+
+```
+
+After the BoxCox transformation, we've managed to get our time series yielding a more stationary (constant) variance. Unfortunately, our ACF still shows non-stationarity in our time series and so we must make further adjustments to make our data stationary.
+
+
+\newpage
+
+### Detrending Method
+We can clearly see that the time series trends are non-deterministic in nature - there are no clear deterministic trends such as linearity in the time series (though Aug-Dec appear linear, this trend is not true for the entire time).
+
+To statistically confirm our guess, we use [KPSS and ADF tests](https://stats.stackexchange.com/a/120344)$^{[5]}$ to determine the trend type.
+
+Test | $H_N$ | $H_A$ |
+-----|-------|-------|
+KPSS | Stationary | Non-Stationary | 
+ADF | Non-Stationary | Stationary |
+
+For the KPSS test - If we reject $H_N$ in favour of $H_A$, we can conclude the series is non-stationary and that the trend is non-deterministic - thus, differencing should be the method of detrending.
+Furthermore, if we do not reject $H_N$ for the KPSS test, we perform our ADF test.
+
+```{r TEmpCHUNK, fig.show="hold", fig.height=4, results='hide'}
+#kpss.test(as.ts(BoxCox[Set[1]])) # p < 0.05 so REJECT Null (Null = Stationary, so Alt = Non-Stationary) For KPSS Test --> If Null Rejected, non-deterministic Trend
+adf.test(as.ts(BoxCox[Set[1]])) # p > 0.05 so ACCEPT NULL (Null = Non-Stationary, so Alt = Stationary) --> If Null Rejected, Stationary, Else, Uninformative
+
+#kpss.test(as.ts(BoxCox[Set[2]])) # p < 0.05 so REJECT Null (Null = Stationary, so Alt = Non-Stationary) For KPSS Test --> If Null Rejected, non-deterministic Trend
+adf.test(as.ts(BoxCox[Set[2]])) # p > 0.05 so ACCEPT NULL (Null = Non-Stationary, so Alt = Stationary) --> If Null Rejected, Stationary, Else, Uninformative
+
+#kpss.test(as.ts(BoxCox[Set[3]])) # p < 0.05 so REJECT Null (Null = Stationary, so Alt = Non-Stationary) For KPSS Test --> If Null Rejected, non-deterministic Trend
+adf.test(as.ts(BoxCox[Set[3]])) # p > 0.05 so ACCEPT NULL (Null = Non-Stationary, so Alt = Stationary) --> If Null Rejected, Stationary, Else, Uninformative
+
+```
+
+In running these tests, we found that all three datasets rejected the null hypothesis for the KPSS test and thus have a non-deterministic trend that can be removed with differencing.
+
+\newpage
+
+### Differencing
+
+We can now remove our remaining non-deterministic trend and achieve stationarity through differencing.
+
+```{r Differencing_Setup, fig.show="hold", fig.height=4}
+
+Diff1 <- BoxCox[-c(1:1),] #Removing One Row due to Differencing
+Diff2 <- BoxCox[-c(1:2),] #Removing Two Rows due to Differencing
+
+#Creating our Differenced Data
+for (i in 1:length(Set)){
+  Diff1[i] <- unlist(diff(as.ts(BoxCox[i]), lag=1, differences=1))
+  Diff2[i] <- unlist(diff(as.ts(BoxCox[i]), lag=1, differences=2))
+}
+
+```
+
+#### First-Order
+After applying *first-order* differencing to our transformed data, we can see from plotting the time series that the dataset has gotten closer to being stationary as our mean varies less drastically over time.
+
+From the ACF, though all three have improved in terms of approaching stationarity:
+
+* The **Cases** dataset now approaches 0 at higher lags much more quickly than prior, though many significant spikes still appear (non-stationary).
+* The **ICU** dataset now has less significant spikes, but does not approach 0 (non-stationary).
+* The **Ventilator** dataset now has a few significant spikes and then appears to oscillate as it slowly decreases to 0 (Stationary).
+
+```{r Differencing_1, fig.show="hold", fig.height=4, fig.width=10, results='hide'}
+
+par(mfrow=c(1,3))
+
+for (i in 1:length(Set)){
+  plot(as.ts(Diff1[i]), main=sprintf("%s",Set[i]), sub="Diff(1)")
+}
+
+for (i in 1:length(Set)){
+  acf(as.ts(Diff1[i]), main=sprintf("%s",Set[i]), sub="Diff(1)", lag.max=20)
+}
+
+#kpss.test(as.ts(BoxCox[Set[1]])) # p < 0.05 so REJECT Null (Null = Stationary, so Alt = Non-Stationary) For KPSS Test --> If Null Rejected, non-deterministic Trend
+adf.test(as.ts(Diff1[1])) # p > 0.05 so ACCEPT NULL (Null = Non-Stationary, so Alt = Stationary) --> If Null Rejected, Stationary, Else, Uninformative
+
+#kpss.test(as.ts(BoxCox[Set[2]])) # p < 0.05 so REJECT Null (Null = Stationary, so Alt = Non-Stationary) For KPSS Test --> If Null Rejected, non-deterministic Trend
+adf.test(as.ts(Diff1[2])) # p > 0.05 so ACCEPT NULL (Null = Non-Stationary, so Alt = Stationary) --> If Null Rejected, Stationary, Else, Uninformative
+
+#kpss.test(as.ts(BoxCox[Set[3]])) # p < 0.05 so REJECT Null (Null = Stationary, so Alt = Non-Stationary) For KPSS Test --> If Null Rejected, non-deterministic Trend
+adf.test(as.ts(Diff1[3])) # p < 0.05 so REJECT NULL (Null = Non-Stationary, so Alt = Stationary) --> If Null Rejected, Stationary, Else, Uninformative
+
+```
+
+
+Overall, our Ventilator TS is now stationary.
+As for ICU beds and Active Cases, though we can clearly see that the data more closely *resembles* a stationary series now, it is still not yet stationary.
+Thus, we will take our second difference. 
+
+#### Overdifferencing
+Though our ventilator dataset still has slightly-significant lags at 3/5/6 and does not "rapidly" approach 0 with increasing lags, we still want to avoid overdifferencing and so will accept the first-order difference of the ventilator dataset as appropriately stationary. *Models should be simple, but not too simple*.
+
+#### Second-Order
+After applying *second-order* differencing to our transformed data, we can see from plotting the time series that both datasets clearly appear to stationary as our mean does not vary over time.
+
+However, from the ACF we can see that for our remaining two non-stationary datasets:
+
+* The **Cases** dataset now has less significant spikes, but some still appear at frequent intervals that may indicate seasonality (Non-Stationary).
+* The **ICU** dataset now has only one significant spike and does decrease to 0 at higher lags (Stationary).
+* The **Ventilator** dataset is unchanged as it was already stationary after first-order differencing (Stationary).
+
+```{r Differencing_2, fig.show="hold", fig.height=4,results='hide'}
+
+par(mfrow=c(1,3))
+
+#PLOTS
+for (i in 1:length(Set)){
+  if (i!=3){
+    plot(as.ts(Diff2[i]), main=sprintf("%s",Set[i]), sub="Diff(2)")
+  }
+  else{
+    plot(as.ts(Diff1[i]), main=sprintf("%s",Set[i]), sub="Diff(1)")
+  }
+}
+
+#ACFS
+for (i in 1:length(Set)){
+  if (i!=3){
+    acf(as.ts(Diff2[i]), main=sprintf("%s",Set[i]), sub="Diff(2)", lag.max=20)
+  }
+  else{
+    acf(as.ts(Diff1[i]), main=sprintf("%s",Set[i]), sub="Diff(1)", lag.max=20)
+  }
+}
+
+#kpss.test(as.ts(BoxCox[Set[1]])) # p < 0.05 so REJECT Null (Null = Stationary, so Alt = Non-Stationary) For KPSS Test --> If Null Rejected, non-deterministic Trend
+adf.test(as.ts(Diff2[Set[1]])) # p < 0.05 so REJECT NULL (Null = Non-Stationary, so Alt = Stationary) --> If Null Rejected, Stationary, Else, Uninformative
+
+#kpss.test(as.ts(BoxCox[Set[2]])) # p < 0.05 so REJECT Null (Null = Stationary, so Alt = Non-Stationary) For KPSS Test --> If Null Rejected, non-deterministic Trend
+adf.test(as.ts(Diff2[Set[2]])) # p < 0.05 so REJECT NULL (Null = Non-Stationary, so Alt = Stationary) --> If Null Rejected, Stationary, Else, Uninformative
+
+#kpss.test(as.ts(BoxCox[Set[3]])) # p < 0.05 so REJECT Null (Null = Stationary, so Alt = Non-Stationary) For KPSS Test --> If Null Rejected, non-deterministic Trend
+adf.test(as.ts(Diff2[Set[3]])) # p < 0.05 so REJECT NULL (Null = Non-Stationary, so Alt = Stationary) --> If Null Rejected, Stationary, Else, Uninformative
+
+
+```
+
+Though our ICU and Ventilator time series seem to be appropriately stationary at this point, our Cases dataset still displays non-stationarity in that possible seasonality exists even after second order differencing.
+
+However, an Augmented-Dickey Fuller test suggested stationarity.
+
+### Seasonality
+For seasonality, we would tend to find that for MA(q) models the ACF has a single secondary significant spike. For an AR(p) model, the ACF would have spikes at the seasonal lags.
+Similarly, the roles would be swapped for the PACFs; that is, for an MA(q) model the PACF would have spikes at seasonal lags and an AR(p) model a single spike.
+
+In examining the Cases dataset, we can still see spikes at lags 5, 7, 13, 14, and 16. However, these spikes are not at consistent intervals as one might expect of an AR model, and as there is no single spike, it is not consistent with an MA(q) model either.
+
+Additionally, the PACF (which can be seen in Appendix A) does have a spike at lag 13. This might suggest a seasonality every 13 lags and coinside with an AR(p) model.
+
+Overall, with numerous significant spikes at inconsistent intervals, and with an ADF test determining stationarity, we have decided to avoid examining seasonal models for the Cases dataset as it would likely prove to be more complicated than anything handled in the scope of this course.
+
+\newpage
+
+### Summary of Changes
+Below the entire process of making our datasets stationary can be seen, from:                
+(1) Our Original Data, (2) BoxCox Transformed, (3) First-Order Difference, (4), Second-Order Difference
+
+
+```{r PreModel_Summary, fig.show="asis", fig.height=8, results="asis"}
+
+par(mfrow=c(4,2))
+
+for (i in 1:length(Set)){
+  
+    plot(as.ts(COVID[i]), main=sprintf("%s",Set[i]), sub="Original")
+    acf(as.ts(COVID[i]), main=sprintf("%s",Set[i]), sub="Original", lag.max=20)
+    
+    plot(as.ts(BoxCox[i]), main=sprintf("%s",Set[i]), sub="BoxCox")
+    acf(as.ts(BoxCox[i]), main=sprintf("%s",Set[i]), sub="BoxCox", lag.max=20)
+    
+    plot(as.ts(Diff1[i]), main=sprintf("%s",Set[i]), sub="Diff(1)")
+    acf(as.ts(Diff1[i]), main=sprintf("%s",Set[i]), sub="Diff(1)", lag.max=20)
+    
+    if (i!=3){
+      plot(as.ts(Diff2[i]), main=sprintf("%s",Set[i]), sub="Diff(2)")
+      acf(as.ts(Diff2[i]), main=sprintf("%s",Set[i]), sub="Diff(2)", lag.max=20)
+    }
+  
+  cat("\\newpage")
+  
+}
+
+```
+
+
+```{r Stationary_Dataset, fig.show="asis", fig.height=8, results="asis"}
+
+#Will Now Break into Stationary Datasets as will need to differentiate
+Stationary <- list()
+ProperSeries <- list("BoxCox Diff2", "BoxCox Diff2", "BoxCox Diff1")
+
+for (i in 1:length(Set)){
+  if (i!=3){
+    Stationary[[i]] <- as.ts(unlist(Diff2[i]))
+  }
+  
+  else
+    Stationary[[i]] <- as.ts(unlist(Diff1[i]))
+}
+
+```
+
+
+\newpage
+
+## Model Estimation
+Now that we have our stationary series, we can estimate some appropriate ARIMA(p,d,q) models.
+
+Based off the [pre-model diagnostics](#pre-model-diagnostics), our integrated value "d" is equal to 1 for Ventilators and 2 for Cases/ICU. Any reference of ARMA(p,q) is actually ARIMA(p,d,q).
+
+We will follow the informal rule that both *p* and *q* are no larger than 4 unless model identification methods strongly suggest it.
+
+### ACF/PACF
+
+ACF/PACF plots are very useful in identifying single AR(p) or MA(q) models, however they fail to provide a clear picture of possible ARMA(p,q) models. In looking at an ACF/PACF plot, we can infer the following:
+
+* For AR(p) models, the ACF plot tends to tail off while the PACF cuts off after lag p.
+* For MA(q) models, the ACF plot cuts off after lag q while the PACF tends to tail off.
+* For ARMA(p,q) models, the ACF and PACF both tend to tail off. An EACF or other methods are more applicable for determining ARMA(p,q) models.
+
+Below are the plotted ACF/PACFs for each of our datasets, followed by an analysis on the next page.
+
+```{r ACFs-PACFs, fig.show="asis", fig.height=5.5, results="asis"}
+
+par(mfrow=c(3,2))
+
+for (i in 1:length(Set)){
+  acf(Stationary[[i]], main=Set[i], sub=ProperSeries[i])
+  pacf(Stationary[[i]], main=Set[i], sub=ProperSeries[i])
+}
+
+```
+
+**Analysis:**
+
+From the above, we see very similar plots for all three datasets. The ACFs all cut off after lag one, while the PACFs tend to tail off. As a result, these plots would signal an MA(1) model. However, as the ACF/PACF is only reliable for pure AR(p) and MA(q) models, we will also use an EACF for each dataset to see if any mixed models are appropriate.
+
+### EACF
+
+Now looking at the respective EACFs for each dataset, we can look for "wedges" or "boxed in" values; that is, circles that are surrounded by X's in either a wedge shape or surrounding box. Those circles indicate potential ARMA model candidates.
+
+```{r EACFs, fig.show="asis", fig.height=5.5, results="hide", message=FALSE}
+
+par(mfrow=c(3,1))
+
+for (i in 1:length(Set)){
+  message(Set[i])
+  eacf(Stationary[[i]], ar.max=7, ma.max=7)
+  
+}
+
+  
+```
+
+
+**Order:** From Left to Right - Cases, ICU, Ventilators
+
+![Cases](Cases_EACF.png) ![ICU](ICU_EACF.png) ![Ventilators](Vent_EACF.png)
+
+
+
+**Analysis:**
+
+By looking at our EACF, one might conclude from this that the following ARMA models are appropriate - in order of "best" to "worst" as suggested by the EACF. Similarly to the ACF/PACFs, our EACFs for each dataset are very similar. All three tend to have wedges stemming from ARMA(0,1) that extend diagonally down. Thus, the best three potential models would be those most closely boxed in by X's:
+
+1. ARMA(0,1)
+2. ARMA(0,2)
+3. ARMA(1,2)
+
+But, this is not the only method of determining ARMA(p,q) models. To further examine potential candidate models, we can plot BIC values (or calculate AIC/BIC values for specific models).
+
+\newpage
+
+### BIC/AIC
+
+#### Standard Method (Visual)
+Here, we plot Batesian Infrmation Criterion (BIC) values. From examining this plot, we can see the strongest candidates are the ones with shaded boxes at the top of the Y-axis. Additionally, if the shaded boxes extend downwards from the initial one, it further indicates strong candidacy.
+
+The "Dataset-Lag#" indicates an appropriate AR(#) portion of the model, while the "error-lag#" section indicates the MA(#) portion.
+
+**Note:**
+As suggested in lectures, as prior methods did not strongly indicate models with p and q terms larger than 4, we will only plot terms up to 4.
+
+
+```{r BIC_AIC_Visual, fig.show="asis", fig.height=6.5, fig.width=3, fig.align="center", results="asis"}
+
+par(mfrow=c(3,1))
+
+for (i in 1:length(Set)){
+  plot(armasubsets(Stationary[[i]], nar=4, nma=4, y.name=Set[i], ar.method='ols'))
+}
+
+```
+
+Our analysis is conducted on the next page.
+
+**Analysis:**
+
+By looking at our armasubsets model, we can see the following AR/MA models might be good candidates. In order of best to worst (where commas indicate decreasing strength and slashes indicate equal strength) for each dataset, we can see that:
+
+1. The Cases dataset suggests ARMA(0,1), ARMA(2,1)/ARMA(2,2)/ARMA(2,3)
+2. The ICU dataset suggests ARMA(0,1), ARMA(4,1), ARMA(1,3)/ARMA(2,3)
+3. The Ventilator dataset suggests ARMA(0,1), ARMA(3,1), ARMA(1,1)
+
+The first model, ARMA(0,1), coincides with our EACF plots for each of the three datasets. Additionally, our suggested model for Cases also supports ARMA(2,1).
+
+### Alternative Method (Looping)
+Another method of determining appropriate candidate models is through minimizing AIC/BIC values. One can perform this in R through loops that check combinations of ARMA models. For this project, this method has been omitted. However, the code to perform such a test can be seen in the appendices.
+
+**Note:**
+
+This method was performed to double-check that candidate models that were determined from visual means were acceptable choices.
+
+
+```{r BIC_AIC_Looped, fig.show="asis", fig.height=8, results="asis", eval=FALSE}
+# AR=7
+# MA=7
+# 
+# BigTest <- list()
+# 
+# for (i in 1:length(Set)){
+#   for (j in 0:AR){
+#     for (k in 0:MA){
+#       name = sprintf("%s_Model%d%d", Set[i], j, k, sep="") #paste,sep=""
+# 
+#       if (i!=3){
+#         #BigTest[name] <- arima(as.numeric((unlist(Stationary[i]))), order=c(j,2,k), method='ML')
+#         assign(name, arima(as.numeric((unlist(Stationary[i]))), order=c(j,2,k), method='ML'))
+#       }
+#       else{
+#         #BigTest[name] <- arima(as.numeric((unlist(Stationary[i]))), order=c(j,1,k), method='ML')
+#         assign(name, arima(as.numeric((unlist(Stationary[i]))), order=c(j,1,k), method='ML'))
+#       }
+#     }
+#   }
+# }
+# 
+# a <- AIC(Ventilators_Model00,Ventilators_Model10,Ventilators_Model20,Ventilators_Model30,Ventilators_Model40,Ventilators_Model50,Ventilators_Model60,Ventilators_Model70,Ventilators_Model01,Ventilators_Model11,Ventilators_Model21,Ventilators_Model31,Ventilators_Model41,Ventilators_Model51,Ventilators_Model61,Ventilators_Model71,Ventilators_Model02,Ventilators_Model12,Ventilators_Model22,Ventilators_Model32,Ventilators_Model42,Ventilators_Model52,Ventilators_Model62,Ventilators_Model72,Ventilators_Model03,Ventilators_Model13,Ventilators_Model23,Ventilators_Model33,Ventilators_Model43,Ventilators_Model53,Ventilators_Model63,Ventilators_Model73,Ventilators_Model04,Ventilators_Model14,Ventilators_Model24,Ventilators_Model34,Ventilators_Model44,Ventilators_Model54,Ventilators_Model64,Ventilators_Model74,Ventilators_Model05,Ventilators_Model15,Ventilators_Model25,Ventilators_Model35,Ventilators_Model45,Ventilators_Model55,Ventilators_Model65,Ventilators_Model75,Ventilators_Model06,Ventilators_Model16,Ventilators_Model26,Ventilators_Model36,Ventilators_Model46,Ventilators_Model56,Ventilators_Model66,Ventilators_Model76,Ventilators_Model07,Ventilators_Model17,Ventilators_Model27,Ventilators_Model37,Ventilators_Model47,Ventilators_Model57,Ventilators_Model67,Ventilators_Model77)
+# 
+# min(a[2])
+# a
+# a[a[2]<244]
+# #Below 244 has: (4,1), (5,1), (4,2), (0,6), (1,6)
+# 
+# 
+# b <- BIC(Ventilators_Model00,Ventilators_Model10,Ventilators_Model20,Ventilators_Model30,Ventilators_Model40,Ventilators_Model50,Ventilators_Model60,Ventilators_Model70,Ventilators_Model01,Ventilators_Model11,Ventilators_Model21,Ventilators_Model31,Ventilators_Model41,Ventilators_Model51,Ventilators_Model61,Ventilators_Model71,Ventilators_Model02,Ventilators_Model12,Ventilators_Model22,Ventilators_Model32,Ventilators_Model42,Ventilators_Model52,Ventilators_Model62,Ventilators_Model72,Ventilators_Model03,Ventilators_Model13,Ventilators_Model23,Ventilators_Model33,Ventilators_Model43,Ventilators_Model53,Ventilators_Model63,Ventilators_Model73,Ventilators_Model04,Ventilators_Model14,Ventilators_Model24,Ventilators_Model34,Ventilators_Model44,Ventilators_Model54,Ventilators_Model64,Ventilators_Model74,Ventilators_Model05,Ventilators_Model15,Ventilators_Model25,Ventilators_Model35,Ventilators_Model45,Ventilators_Model55,Ventilators_Model65,Ventilators_Model75,Ventilators_Model06,Ventilators_Model16,Ventilators_Model26,Ventilators_Model36,Ventilators_Model46,Ventilators_Model56,Ventilators_Model66,Ventilators_Model76,Ventilators_Model07,Ventilators_Model17,Ventilators_Model27,Ventilators_Model37,Ventilators_Model47,Ventilators_Model57,Ventilators_Model67,Ventilators_Model77)
+# b
+# min(b[2])
+# #Best is ARMA(0,2)
+# 
+# b[b[2]<263]
+# #Below 263 has: (0,2), (1,2), (0,3)
+
+```
+
+\newpage
+
+### Summary of Methods
+Here we can see a table comprised of the top 4 model candidates as suggested by ACF, PACF, EACF, and BIC plots.
+
+
+Dataset | Method | 1st | 2nd | 3rd | 4th |
+--------|--------|-----|-----|-----|-----|
+Cases | ACF/PACF | ARMA(0,1) |  |  | |
+|     | EACF | ARMA(0,1) | ARMA(0,2) | ARMA(1,2) | |
+|     | BIC | ARMA(0,1) | ARMA(2,1) | ARMA(2,2) | ARMA(2,3) |
+| |  |  |  |  | |
+ICU | ACF/PACF | ARMA(0,1) |  |  | |
+|     | EACF | ARMA(0,1) | ARMA(0,2) | ARMA(1,2) | |
+|     | BIC | ARMA(0,1) | ARMA(4,1) | ARMA(1,3) | ARMA(2,3) |
+| |  |  |  |  | |
+Vents | ACF/PACF | ARMA(0,1) |  |  | |
+|     | EACF | ARMA(0,1) | ARMA(0,2) | ARMA(1,2) | |
+|     | BIC | ARMA(0,1) | ARMA(3,1) | ARMA(1,1) | |
+
+### Model Choices
+We will select three models per dataset for which to perform diagnostics on. Once diagnostics are completed, we will choose a final model for each dataset.
+
+Unsurprisingly, each dataset has a similar array of recommended models to choose from. Thus we can choose the same models for each dataset - not just for simplicity sake.
+
+As noted previously in the AIC/BIC section, minimizing values of AIC/BIC were calculated through an R loop. These minimzing values also confirmed that the below three models are acceptable for each dataset. Though they may not be the absolute best numerically, the difference between the values for these models and the "best" models is minute.
+
+Dataset | Models | | |
+--------|--------|-|-|
+Cases | ARMA(0,1) | ARMA(0,2) | ARMA(1,2) |
+ICU | ARMA(0,1) | ARMA(0,2) | ARMA(1,2) |
+Vents | ARMA(0,1) | ARMA(0,2) | ARMA(1,2) |
+
+```{r Estimated_Models, fig.show="asis", fig.height=8, fig.width=5.5}
+
+MyModels <- list()
+
+for (i in 1:length(Set)){
+  assign(sprintf("ARMA.01_%s",Set[i]), arima(as.ts(unlist(Stationary[i])), order=c(0,0,1), method='ML'))
+  assign(sprintf("ARMA.02_%s",Set[i]), arima(as.ts(unlist(Stationary[i])), order=c(0,0,2), method='ML'))
+  assign(sprintf("ARMA.12_%s",Set[i]), arima(as.ts(unlist(Stationary[i])), order=c(1,0,2), method='ML'))
+  
+  MyModels[i+0] <- sprintf("ARMA.01_%s",Set[i])
+  MyModels[i+3] <- sprintf("ARMA.02_%s",Set[i])
+  MyModels[i+6] <- sprintf("ARMA.12_%s",Set[i])
+  
+}
+
+#test1 <- arima(as.ts(unlist(Stationary[2])), order=c(4,0,1), method='ML')
+#test2 <- arima(as.ts(unlist(Stationary[2])), order=c(1,0,3), method='ML')
+#test3 <- arima(as.ts(unlist(Stationary[2])), order=c(0,0,2), method='ML')
+#BIC(test1,test2,test3)
+```
+
+\newpage
+
+
+# Parameter Estimation
+For our parameter estimation, we examined model parameters under the Maximum Likelihood method as our series are of moderate length.
+
+## Maximum Likelihood
+We will look for coefficients where the value is insignificantly different from the standard error - that is, a difference of less than 0.1 exists between the coefficient value and the standard error.
+```{r MLE, fig.show="asis", fig.height=8, fig.width=5.5, echo=FALSE, message=FALSE}
+
+for (i in 1:length(MyModels)){
+  #0,1 models are on 1,2,3 in order Cases ICU Vent
+  #print(get(unlist(MyModels[i])))
+}
+
+```
+
+
+### Cases Dataset
+
+| Model | AR(1) | MA(1) | MA(2) |
+|-------|-------|-------|-------|
+| **ARMA(0,1)** | | | | |
+| Coefficient |  | -0.6168  |  |
+| S.E. |   | 0.0228  |  |
+| AIC = -618.28 |
+| **ARMA(0,2)** | | | | 
+| Coefficient | | -0.5643 | -0.0812 |  
+| S.E. |  | 0.0676 | 0.0703 |
+| AIC = -617.62 |
+| **ARMA(1,2)** | | | | 
+| Coefficient | -0.4042 | -0.1582 | -0.3327 |  
+| S.E. | 0.4064 | 0.3939  | 0.2328 |
+| AIC = -616.34 |
+
+As we can see in the above table, for the ARMA(0,2) model the MA(2) term is not significantly different from 0. For the ARMA(1,2) model, the MA(2) and AR(1) terms are not significant either. Additionally, our AIC points towards all models being very similar though the ARMA(0,1) model is best.
+
+\newpage
+
+### ICU Dataset
+
+| Model | AR(1) | MA(1) | MA(2) |
+|-------|-------|-------|-------|
+| **ARMA(0,1)** | | | | 
+| Coefficient |  | -0.9291  |  |  
+| S.E. |  | 0.0228 |  |
+| AIC = 317.46 |
+| **ARMA(0,2)** | | | | 
+| Coefficient |  | -0.9478  | 0.0198  |  
+| S.E. |  | 0.0645 | 0.0636  |
+| AIC = 319.36 |
+| **ARMA(1,2)** | | | | 
+| Coefficient | -0.8029 | -0.1511 | -0.7194 |  
+| S.E. | 0.4985  | 0.5246  | 0.4907 |
+| AIC = 320.97 |
+
+Similarly to how we analyzed the Cases dataset, we can see that for the ARMA(0,2) model the MA(2) term is not significantly different from 0. For the ARMA(1,2) model, all appear to be significant. Additionally, our AIC points towards all models being very similar though the ARMA(0,1) model is best.
+
+### Ventilator Dataset
+
+| Model | AR(1) | MA(1) | MA(2) |
+|-------|-------|-------|-------|
+| **ARMA(0,1)** | | | | 
+| Coefficient |  | -0.2929  |  |  
+| S.E. |  | 0.0603 |  |
+| AIC = 259.95 |
+| **ARMA(0,2)** | | | | 
+| Coefficient |  | -0.2831 | -0.0174 |  
+| S.E. |  | 0.0692 | 0.0639  |
+| AIC = 261.88 |
+| **ARMA(1,2)** | | | | 
+| Coefficient | -0.6634 | 0.4109 | -0.2615  |  
+| S.E. | 0.1814 | 0.1756 | 0.0612 |
+| AIC = 261.08 |
+
+We can see that for the ARMA(0,2) model the MA(2) term is not significantly different from 0. For the ARMA(1,2) model, all appear to be significant. Additionally, our AIC points towards all models being very similar though the ARMA(0,1) model is best.
+
+
+\newpage
+
+# Model Diagnostics (Ch 8)
+We will now perform diagnostics on our candidate models to help narrow down an ideal choice for a final model.
+
+## Residual Analysis
+
+### Plot of Residuals
+For a model to be adequate, we want to see a rectangular scatter around y = 0 with no visible trends. Based on our plot of residuals for each model/dataset, we can see that our models are adequate, though there are a few spots with larger-than-normal spikes occuring - likely indicative of an underlying cause; in our case, this is likely due to holidays where case data was grouped with the next non-holiday.
+
+```{r Residuals_Plot, fig.show="asis", fig.height=8, fig.width=8}
+
+par(mfrow=c(3,3))
+
+for (i in 1:length(MyModels)){
+  name_temp = MyModels[i]
+  model_temp = get(unlist(name_temp))
+  
+  plot(rstandard(model_temp), ylab="Standardized Residuals", main=MyModels[i]); abline(h=0)
+}
+
+```
+
+\newpage
+
+### Histogram of Residuals
+For a model to be accurate based on histogram plot, We would like the histograms to be approximately normal in nature. That is, roughly a symmetric, unimodal bell shape.
+
+```{r Residuals_Hist, fig.show="asis", fig.height=8, fig.width=8}
+
+par(mfrow=c(3,3))
+
+for (i in 1:length(MyModels)){
+  name_temp = MyModels[i]
+  model_temp = get(unlist(name_temp))
+  
+  hist(rstandard(model_temp), ylab="Standardized Residuals", main=MyModels[i])
+}
+
+```
+
+**Analysis:**
+
+From the above, we can see that all models seem to be approximately normal. Specifically, for the ICU dataset, it appears that the ARMA(1,2) model is more closely normal than the others. The Cases and Ventilators datasets both have nearly indistringuishable normal histograms.
+
+\newpage
+
+### QQ-Plot of Residuals
+Our next test is assessing the normality of our residuals through a QQ plot. As can be seen below, all of our models for both the Cases and ICU dataset appear to be sufficiently normal. However, all of our models for the Ventilators dataset have clear outliers and appears to be [heavy-tailed](https://stats.stackexchange.com/questions/101274/how-to-interpret-a-qq-plot).
+
+```{r Residuals_QQ, fig.show="asis", fig.height=8, fig.width=8}
+
+par(mfrow=c(3,3))
+
+for (i in 1:length(MyModels)){
+  name_temp = MyModels[i]
+  model_temp = get(unlist(name_temp))
+  
+  qqnorm(residuals(model_temp), main=MyModels[i]); qqline(residuals(model_temp))
+}
+
+```
+
+\newpage
+
+### ACF of Residuals
+We will now check the independence of the noise terms in our models by plotting an ACF of the residuals. Ideally, if the noise terms are independent we would have no more than 1 in 20 lags to be above/below the significance lines as that would indicate autocorrelation of the residuals.
+
+```{r Residuals_ACF, fig.show="asis", fig.height=8, fig.width=8}
+
+par(mfrow=c(3,3))
+
+for (i in 1:length(MyModels)){
+  name_temp = MyModels[i]
+  model_temp = get(unlist(name_temp))
+  
+  acf(residuals(model_temp), main=MyModels[i])
+}
+
+```
+
+**Analysis:**
+
+In looking at the above ACF plots for each model/dataset, we can see that:
+
+1. For the Cases dataset, we have excessive autocorrelation at lags 7, 14, and 21. Of the three very similar plots, the ARMA(1,2) model seems to have slightly smaller spikes, though still significant (dependence of noise terms).
+2. For the ICU dataset, we have just one excessive autocorrelation at lag 9 (though lag 5 is close). We can conclude from this plot that autocorrelation in the residual is zero (independence of noise terms). Additionally, the ARMA(1,2) model has slightly smaller spikes at lag 9 and 5.
+3. For the Ventilator dataset, we have excessive autocorrelation at lags 5, 6, 21, and 22. Thus our noise terms are not independent.
+
+\newpage
+
+### Ljung-Box Test
+For the Ljung-Box Test, we'd want to see that we have P-Values > 0.05 for all lags (as this would indicate independence of our residuals).
+
+**Cases Dataset:**
+We can see for all models that the p-values are below 0.05 at higher lags thus indicating dependence. Though all fail, the best model is ARMA(1,2) in this regard.
+
+**ICU Dataset:**
+Unlike the cases dataset, we can see that for all models the p-values at all lags are above 0.05, thus indicating independence.
+
+**Ventilator Dataset:**
+Similar to the cases dataset, all models have p-values below 0.05 at higher lags thus indicating dependence.
+
+Please refer to the appendices for these plots.
+
+```{r Residuals_LJBT, fig.show="hide", fig.height=8, fig.width=8, include=FALSE}
+
+Diagnostic <- list()
+
+for (i in 1:length(MyModels)){
+  
+  if (i==1 || i==4 || i==7){
+    print('Cases - See Below Image')
+  } else if (i==2 || i==5 || i==8){
+    print('ICU - See Below Image')
+  } else {
+    print('Ventilators - See Below Image')
+  }
+  
+  name_temp = MyModels[i]
+  model_temp = get(unlist(name_temp))
+  
+  #Since Can't Name: 1 = Cases(0,1), 2 = Vent(0,1), 3 = ICU(0,1), then Cases/Vent/ICU next model, then next model
+  #i.e a dataset loop nestled in a model loop
+  tsdiag(model_temp, gof.lag=20, plot=F)
+
+}
+
+```
+
+\newpage
+
+### Numerical Tests
+For the Runs Test, if *p* < 0.05, we reject the null hypothesis (independence of error terms) in favour of alt (dependence of error terms correlated).
+
+For the Ljung-Box Test, if *p* < 0.05, we reject the null hypothesis (independence of error terms) in favour of alt (dependence of error terms correlated).
+
+For the Shapiro Test, if *p* < 0.05, we reject the null hypothesis (residuals are normally distributed) in favour of alt (residuals are not normally distributed).
+
+For the Jarque Test, if *p* < 0.05, we reject the null hypothesis (residuals are normally distributed) in favour of alt (residuals are not normally distributed).
+
+```{r Residuals_Tests, fig.show="asis", fig.height=8, fig.width=8}
+
+RunTest_PV <- list()
+BoxTest_PV <- list()
+SHPTest_PV <- list()
+JRQTest_PV <- list()
+
+for (i in 1:length(MyModels)){
+  name_temp = MyModels[i]
+  model_temp = get(unlist(name_temp))
+  
+  message(MyModels[i])
+  
+  RunTemp <- runs(rstandard(model_temp))
+  #print(RunTemp)
+  RunTest_PV[i] <- RunTemp[1]
+  
+  BoxTemp <- Box.test(rstandard(model_temp), type = "Ljung")
+  #print(BoxTemp)
+  BoxTest_PV[i] <- BoxTemp[3]
+  
+  SHPTemp <- shapiro.test(rstandard(model_temp))
+  #print(SHPTemp)
+  SHPTest_PV[i] <- SHPTemp[2]
+  
+  JRQTemp <- jarque.bera.test(rstandard(model_temp))
+  #print(JRQTemp)
+  JRQTest_PV[i] <- JRQTemp[3]
+  
+}
+
+Test_Type  <- c("Runs", "Box", "Shapiro", "JRQ")
+
+Test_Cases_01  <- c(unlist(RunTest_PV[1]), unlist(BoxTest_PV[1]), unlist(SHPTest_PV[1]), unlist(JRQTest_PV[1]))
+Test_ICU_01   <- c(unlist(RunTest_PV[2]), unlist(BoxTest_PV[2]), unlist(SHPTest_PV[2]), unlist(JRQTest_PV[2]))
+Test_Vent_01  <- c(unlist(RunTest_PV[3]), unlist(BoxTest_PV[3]), unlist(SHPTest_PV[3]), unlist(JRQTest_PV[3]))
+
+Test_Cases_02  <- c(unlist(RunTest_PV[4]), unlist(BoxTest_PV[4]), unlist(SHPTest_PV[4]), unlist(JRQTest_PV[4]))
+Test_ICU_02   <- c(unlist(RunTest_PV[5]), unlist(BoxTest_PV[5]), unlist(SHPTest_PV[5]), unlist(JRQTest_PV[5]))
+Test_Vent_02  <- c(unlist(RunTest_PV[6]), unlist(BoxTest_PV[6]), unlist(SHPTest_PV[6]), unlist(JRQTest_PV[6]))
+
+Test_Cases_12  <- c(unlist(RunTest_PV[7]), unlist(BoxTest_PV[7]), unlist(SHPTest_PV[7]), unlist(JRQTest_PV[7]))
+Test_ICU_12   <- c(unlist(RunTest_PV[8]), unlist(BoxTest_PV[8]), unlist(SHPTest_PV[8]), unlist(JRQTest_PV[8]))
+Test_Vent_12  <- c(unlist(RunTest_PV[9]), unlist(BoxTest_PV[9]), unlist(SHPTest_PV[9]), unlist(JRQTest_PV[9]))
+
+DF_Cases_Resid <- data.frame(Test_Type, Test_Cases_01, Test_Cases_02, Test_Cases_12)
+  Tbl_Cases_Resid<-kable(DF_Cases_Resid, caption="Summary of Cases P-Values", col.names=c("Test Type","ARMA(0,1)","ARMA(0,2)","ARMA(1,2)"), format="pipe", padding=70, digits=4)
+    add_header_above(Tbl_Cases_Resid, c(" "=1,"Cases"=3), border_left=T, border_right=T, line=T)
+    
+DF_Vent_Resid <- data.frame(Test_Type, Test_ICU_01, Test_ICU_02, Test_ICU_12)
+  Tbl_Vent_Resid<-kable(DF_Vent_Resid, caption="Summary of ICU P-Values", col.names=c("Test Type","ARMA(0,1)","ARMA(0,2)","ARMA(1,2)"), format="pipe", padding=70, digits=4)
+    add_header_above(Tbl_Vent_Resid, c(" "=1,"ICU"=3), border_left=T, border_right=T, line=T)
+    
+DF_Vent_Resid <- data.frame(Test_Type, Test_Vent_01, Test_Vent_02, Test_Vent_12)
+  Tbl_Vent_Resid<-kable(DF_Vent_Resid, caption="Summary of Vent P-Values", col.names=c("Test Type","ARMA(0,1)","ARMA(0,2)","ARMA(1,2)"), format="pipe", padding=70, digits=4)
+    add_header_above(Tbl_Vent_Resid, c(" "=1,"Vent"=3), border_left=T, border_right=T, line=T)    
+
+```
+
+\newpage
+
+### Summary of Tests
+Here we summarize the findings of our various tests in terms of normalcy of residuals and independence of error terms.
+
+```{r Residuals_Summary, fig.show="asis", fig.height=8, fig.width=8}
+
+Test_Type_V2  <- c("Plot", "Hist", "QQ", "ACF", "Ljung-Box (Visual)", "Runs", "Ljung-Box (Numerical)", "Shapiro", "JRQ")
+
+Cases_Ans01 <- c("Normal", "Normal", "Normal", "Dependent", "Dependent", "Independent", "Independent", "Normal", "Non-Normal")
+Cases_Ans02 <- c("Normal", "Normal", "Normal", "Dependent", "Dependent", "Independent", "Independent", "Normal", "Normal")
+Cases_Ans12 <- c("Normal", "Normal", "Normal", "Dependent", "Dependent", "Independent", "Independent", "Normal", "Normal")
+
+ICU_Ans01 <- c("Normal", "Normal", "Normal", "Independent", "Independent", "Independent", "Independent", "Normal", "Normal")
+ICU_Ans02 <- c("Normal", "Normal", "Normal", "Independent", "Independent", "Independent", "Independent", "Normal", "Normal")
+ICU_Ans12 <- c("Normal", "Normal", "Normal", "Independent", "Independent", "Independent", "Independent", "Normal", "Normal")
+
+Vent_Ans01 <- c("Normal", "Normal", "Non-Normal", "Dependent", "Dependent", "Independent", "Independent", "Non-Normal", "Non-Normal")
+Vent_Ans02 <- c("Normal", "Normal", "Non-Normal", "Dependent", "Dependent", "Independent", "Independent", "Non-Normal", "Non-Normal")
+Vent_Ans12 <- c("Normal", "Normal", "Non-Normal", "Dependent", "Dependent", "Independent", "Independent", "Non-Normal", "Non-Normal")
+
+
+DF_Cases_Ans <- data.frame(Test_Type_V2, Cases_Ans01, Cases_Ans02, Cases_Ans12)
+  Tbl_Cases_Ans <-kable(DF_Cases_Ans, caption="Summary of Cases Dataset Tests", col.names=c("Test Type","ARMA(0,1)","ARMA(0,2)","ARMA(1,2)"), format="pipe", padding=70)
+    add_header_above(Tbl_Cases_Ans, c(" "=1,"Cases"=3), border_left=T, border_right=T, line=T)
+    
+DF_ICU_Ans <- data.frame(Test_Type_V2, ICU_Ans01, ICU_Ans02, ICU_Ans12)
+  Tbl_ICU_Ans <-kable(DF_ICU_Ans, caption="Summary of ICU Dataset Tests", col.names=c("Test Type","ARMA(0,1)","ARMA(0,2)","ARMA(1,2)"), format="pipe", padding=70)
+    add_header_above(Tbl_ICU_Ans, c(" "=1,"ICU"=3), border_left=T, border_right=T, line=T)
+    
+DF_Vent_Ans <- data.frame(Test_Type_V2, Vent_Ans01, Vent_Ans02, Vent_Ans12)
+  Tbl_Vent_Ans <-kable(DF_Vent_Ans, caption="Summary of Ventilator Dataset Tests", col.names=c("Test Type","ARMA(0,1)","ARMA(0,2)","ARMA(1,2)"), format="pipe", padding=70)
+    add_header_above(Tbl_Vent_Ans, c(" "=1,"Vent"=3), border_left=T, border_right=T, line=T)
+
+```
+
+\newpage
+
+## Final Model Selection
+Based on all of the information we have gathered so far about our models (that is, significance of coefficients, AIC values, residual normalcy, and independence of error terms), we can finally select a final model from our candidates for each dataset. In our case, the three models selected for each dataset and up sharing very similar results to each other in terms of visual/numerical tests and AIC scores. As a result of these near-identical models, we decided that the most appropriate method of selecting our final model would involve checking the forecast accuracy of our estimated model against the actual data via minimizing RMSE.
+
+### Model Selection via Tests
+For the sake of completeness, if we were to choose final models without checking model accuracy, we would choose as follows:
+
+**For the Cases Dataset,** the most appropriate final model to use for forecasting appears to be the ARMA(0,2) model. As the JRQ test returned a conclusion of non-normalcy for the residuals in the ARMA(0,1) model, it does not make sense to use this model. Then, Between the ARMA(0,2) and ARMA(1,2) models, both share near identical visual tests, AIC values, and numerical test p-values. As a result, we choose the model with the minimizing AIC value and thus end up with our final model as ARMA(0,2).
+
+**For the ICU Dataset,** the most appropriate final model to use for forecasting appears to be the ARMA(0,1) model. All models shared the same numerical test conclusions, near identical visual tests, and AIC values. As a result, we choose the model with the minimizing AIC value and thus end up with our final model as ARMA(0,1).
+
+**For the Ventilator Dataset,** the most appropriate final model to use for forecasting appears to be the ARMA(0,2) model. All models shared the same numerical test conclusions, near identical visual tests, and AIC values. As a result, we choose the model with the minimizing AIC value and thus end up with our final model as ARMA(0,2).
+
+### Model Selection via Forecast Accuracy
+However, as our model candidates all yielded such similar results and given the fact that we can check our forecasts accuracy with each model, we would like to choose the model that gives the most accurate forecast.
+
+**Root Mean Square Error by Dataset/Model:**
+```{r Accuracy, fig.show="asis", fig.height=4, fig.width=10}
+#CASES
+Cases_01 <- Arima(as.ts(BoxCox[1]), order=c(0,2,1))
+Frcst_Cases_01 <-forecast(Cases_01,31)
+Accuracy_Cases_01 <- accuracy(Frcst_Cases_01,unlist(BoxCox_Est[1]))
+RMSE_Cases_01 <- Accuracy_Cases_01[2,2]
+
+Cases_02 <- Arima(as.ts(BoxCox[1]), order=c(0,2,2))
+Frcst_Cases_02 <-forecast(Cases_02,31)
+Accuracy_Cases_02 <- accuracy(Frcst_Cases_02,unlist(BoxCox_Est[1]))
+RMSE_Cases_02 <- Accuracy_Cases_02[2,2]
+
+Cases_12 <- Arima(as.ts(BoxCox[1]), order=c(1,2,2))
+Frcst_Cases_12 <-forecast(Cases_12,31)
+Accuracy_Cases_12 <- accuracy(Frcst_Cases_12,unlist(BoxCox_Est[1]))
+RMSE_Cases_12 <- Accuracy_Cases_12[2,2]
+
+#ICU
+ICU_01 <- Arima(as.ts(BoxCox[2]), order=c(0,2,1))
+Frcst_ICU_01 <-forecast(ICU_01,31)
+Accuracy_ICU_01 <- accuracy(Frcst_ICU_01,unlist(BoxCox_Est[2]))
+RMSE_ICU_01 <- Accuracy_ICU_01[2,2]
+
+ICU_02 <- Arima(as.ts(BoxCox[2]), order=c(0,2,2))
+Frcst_ICU_02 <-forecast(ICU_02,31)
+Accuracy_ICU_02 <- accuracy(Frcst_ICU_02,unlist(BoxCox_Est[2]))
+RMSE_ICU_02 <- Accuracy_ICU_02[2,2]
+
+ICU_12 <- Arima(as.ts(BoxCox[2]), order=c(1,2,2))
+Frcst_ICU_12 <-forecast(ICU_12,31)
+Accuracy_ICU_12 <- accuracy(Frcst_ICU_12,unlist(BoxCox_Est[2]))
+RMSE_ICU_12 <- Accuracy_ICU_12[2,2]
+
+#Ventilators
+VENT_01 <- Arima(as.ts(BoxCox[3]), order=c(0,1,1))
+Frcst_VENT_01 <-forecast(VENT_01,31)
+Accuracy_VENT_01 <- accuracy(Frcst_VENT_01,unlist(BoxCox_Est[3]))
+RMSE_VENT_01 <- Accuracy_VENT_01[2,2]
+
+VENT_02 <- Arima(as.ts(BoxCox[3]), order=c(0,1,2))
+Frcst_VENT_02 <-forecast(VENT_02,31)
+Accuracy_VENT_02 <- accuracy(Frcst_VENT_02,unlist(BoxCox_Est[3]))
+RMSE_VENT_02 <- Accuracy_VENT_02[2,2]
+
+VENT_12 <- Arima(as.ts(BoxCox[3]), order=c(1,1,2))
+Frcst_VENT_12 <-forecast(VENT_12,31)
+Accuracy_VENT_12 <- accuracy(Frcst_VENT_12,unlist(BoxCox_Est[3]))
+RMSE_VENT_12 <- Accuracy_VENT_12[2,2]
+
+```
+
+| Dataset | ARMA(0,1) | ARMA(0,2) | ARMA(1,2) |
+|---------|-----------|-----------|-----------|
+| CASES | `r RMSE_Cases_01` | `r RMSE_Cases_02` | `r RMSE_Cases_12` |
+| ICU | `r RMSE_ICU_01` | `r RMSE_ICU_02` | `r RMSE_ICU_12` |
+| VENT | `r RMSE_VENT_01` | `r RMSE_VENT_02` | `r RMSE_VENT_12` |
+
+Based on this information, we see that the best final models for the Cases, ICU, and Ventilator datasets are ARMA(0,1), ARMA(0,2), and ARMA(0,1) respectively. We will use these as our final models.
+
+\newpage
+
+## Final Model Deficiencies
+All models were estimated using the Maximum Likelihood Estimation Method.
+
+One deficiency applying to all datasets was the Ljung-Box test - while the visual version of the test suggested a lack of independence in the error terms due to P-Values at higher lags being below 0.05, the numerical test suggested the opposite; that the error terms were in fact independent
+
+Specifically looking at each of the final models, we dicuss further deficiencies.
+
+### Cases Dataset - ARMA(0,1)
+First and foremost, a primary deficiency in our model is the fact that seasonality was not accounted for due to the complicated nature of the ACF/PACF in determining an appropriate seasonal model. This is unideal and likely makes our model less accurate than it could be.
+
+Secondly, there were a few issues with residual tests. While a majority of our tests supported normalcy of residuals and independence of error terms, not all provided the same conclusion. For example, while the JRQ test suggested a lack of normalcy, the Shapiro test and most plots supporetd it. 
+
+### ICU Dataset - ARMA(0,2)
+Unlike our Cases model, there appeared to be no issues with the ICU dataset aside from the visual/numerical Ljung-Box tests differing. All visual tests and numerical tests (aside from the aformentioned) supported the same conclusion of normalcy and independence of the residuals.
+
+### Ventilator Dataset - ARMA(0,1)
+The ventilator model presented the most issues in our analysis. Though our error terms appeared to be independent by both numerical tests (Runs & Ljung-Box), all other numerical tests strongly suggested against normalcy of the residuals. Additionally, the QQ-plot presented with heavy tails indicating a visual lack of normalcy as well.
+
+These heavy tails would indicate that outcomes further away from the expected value would have a higher probability of occuring. To remedy this problem, one could continue under the assumption that the residuals follow a non-normal distribution. However, we will continue under the assumption they follow a normal distribution simply due to the large sampel size we are working with (~240).
+
+
+\newpage
+
+# Forecasting
+
+## Time Series Plots
+With our final selected models we will now examine the actual forecasted time series. Each model was forecasted using the BoxCox transformed data for the month of March and then compared with the actual values (also BoxCox transformed using the same parameter) for the month of March to determine how accurate our forecast was. Here we can see our forecasts, where the red line is actual values, blue line is forecasted values, and the shaded blue cone/grey cone are 90% and 95% confidence intervals, respectively.
+```{r Forecasting, fig.show="asis", fig.height=3.5, fig.width=10}
+
+#CASES
+plot(Frcst_Cases_01,include =242,ylab ="Active Cases",main ="Cases Forecast - ARIMA(0,2,1)", sub="BoxCox Transformed")
+  lines(rbind(BoxCox[1],BoxCox_Est[1]),col ="red"); lines(BoxCox[1],col ="black")
+
+#ICU
+plot(Frcst_ICU_02,include =242,ylab ="ICU Beds In Use",main ="ICU Forecast - ARIMA(0,2,2)", sub="BoxCox Transformed")
+  lines(rbind(BoxCox[2],BoxCox_Est[2]),col ="red"); lines(BoxCox[2],col ="black")  
+
+#VENTS
+plot(Frcst_VENT_01,include =242,ylab ="Ventilators In Use",main ="Ventilator Forecast - ARIMA(0,1,1)", sub="BoxCox Transformed")
+  lines(rbind(BoxCox[3],BoxCox_Est[3]),col ="red"); lines(BoxCox[3],col ="black") 
+  
+```
+
+\newpage
+
+## Importance & Impact of Forecasting
+Forecasting can be important for many reasons and to varying degrees of usefulness. In our case, forecasting critical care service levels is immensely valuable as it could allow hospitals to make informed decisions in how they care for patients and what they have/will need on hand to care for them in the future as well. Specifically, forecasting ICU beds and Ventilators (especially for longer time frames) allows hospitals to raise the number of ICU beds and ventilators well in advance of critical levels being reached - thus preventing unnecessary loss of life.
+
+Additionally, even forecasting the number of active cases of COVID-19 is quite valuable in terms of determining when lockdowns and other restrictions are necessary to help flatten the curve.
+
+\newpage
+
+## Comparing with Critical Care Limits
+As was the goal of this project, we can now examine our forecast and compare it against the maximum number of ICU beds/Ventilators available (in purple), to determine if this capacity might be reached.
+
+As stated earlier, Ontario has approximately 2,300 ICU beds - 1,400 of which are occupied with non-COVID cases, leaving just 900 left for COVID-19 patients (~58 once transformed).
+
+```{r Limits, fig.show="asis", fig.height=4, fig.width=10}
+
+#ICU
+plot(Frcst_ICU_02,include =242,ylab ="ICU Beds In Use",main ="ICU Forecast - ARIMA(0,2,2)", sub="BoxCox Transformed", ylim=c(0,60))
+  lines(rbind(BoxCox[2],BoxCox_Est[2]),col ="red"); lines(BoxCox[2],col ="black"); abline(h=58.387, col="purple")
+```
+
+Similarly, Ontario has 1,971 ventilators available to use. Though there is no current information on how many are in use for non-COVID reasons, we can conservatively estimate that 30% are in use for such. Thus 1,378 ventilators are left for COVID-19 cases (~37 once transformed).
+
+```{r Limits2, fig.show="asis", fig.height=4, fig.width=10}
+#VENTS
+plot(Frcst_VENT_01,include =242,ylab ="Ventilators In Use",main ="Ventilator Forecast - ARIMA(0,1,1)", sub="BoxCox Transformed", ylim=c(0,45))
+  lines(rbind(BoxCox[3],BoxCox_Est[3]),col ="red"); lines(BoxCox[3],col ="black"); abline(h=37.1214, col="purple")
+  
+```
+
+Clearly, though we are moving towards the capacity of ICU beds and Ventilators, there is still minimal risk of hitting it in the next month unless a large change occurs.
+
+\newpage
+
+# Conclusion/Discussion
+
+## Discussion & Summary
+Time series models were estimated from data on three seperate COVID-19 metrics, those being the number of active COVID-19 cases, the number of ICU beds in use, and the number of ventilators in use. This time series data was examined with the end goal of estimating an appropriate model and using it to accurately forecast a month into the future so as to ascertain if there was any risk of reaching critical capacity in hospitals.
+
+### Model Estimation
+The first step in the process of accurately forecasting our time series involved adjusting and transforming our data so as to achieve stationarity to allow for proper model selection. In examining the time series plots, it was clear that all three lacked stationarity in both mean and variance, along with having a non-deterministic trend. No clear seasonality was apparent. Through the use of BoxCox transformations, the variance was made stationary. Next, the mean and non-deterministic trend were removed from the data through first and second order differencing. Upon completion of the respective transformations/adjustments, the datasets finally appeared stationary.
+
+From this newly stationary data, three candidate models were selected for each dataset through the various methods discussed above [ARMA(0,1), ARMA(0,2), ARMA(1,2)]. The candidate models were then subjected to diagnostic tests on their residuals, mainly testing for normalcy and independence of the terms. The candidate models all offered very similar conclusions with the cases and ICU datasets passing numerical tests for independence and normalcy, while the Ventilator dataset failed in terms of normalcy.
+
+### Final Models
+After our candidate models were examined, due to the very similar results for each of the models a final model was selected based on the accuracy of the root mean squared error (RMSE) for each dataset. That is, the model that minimized the RMSE for each dataset was selected.
+
+### Forecasting
+The final models selected were used to forecast one month into the future, constructing an estimated path along with 90% and 95% confidence intervals. For all datasets, our models underestimated their respective metrics.
+
+**Cases:**
+For the cases dataset, our forecasted values increased in a linear fashion somewhat closely to the actual values - however, the actual values begin to quickly increase faster than our forecast as the end of the month was reached.
+
+**ICU Beds:**
+For the ICU dataset, our forecasted values were significantly off - the forecasted values trended linearly downwards, while the actual values increased exponentially nearly exceeding our 95% confidence interval.
+
+**Ventilators:**
+For the Ventilator dataset, our forecasted values were quite accurate for the first two weeks of March. Though actual values fluctuates up and down more, they followed the same linear path as our forecast. In the last two weeks of March, our forecast became less accurate as the number of ventilators began to rise quickly.
+
+**Explanation:**
+With COVID-19 having such a high $R_0$ value, cases tend to grow exponentially and explosively, especially when preventitive measures are relaxed. The end of March signalled the beginning of a third wave of cases due to relaxation of protocols and new more contagious variants. As a result, our forecast could not adequately predict such a sharp rise in cases so quickly.
+
+\newpage
+
+## Conclusion
+Overall, our goal of forecasting COVID-19 metrics and more importantly comparing them with critical levels for ICU beds and Ventilators was completed. Candidate models were selected, and from those, final models chosen with which forecasts were constructed. However, there is a lot left desired in the completion of these tasks.
+
+Firstly, seasonality in the cases dataset was not accounted for despite having indication of existence; this impacts the accuracy of our model choice. Secondly, residuals in the ventilator dataset were not normal; thus impacting the accuracy of our MLE parameters. Additionally, the candidate models selected for model diagnostics were limited to terms of four or less for the ARMA(p,q) model as discussions in lecture suggested trying to avoid using higher terms. Lastly, to a degree, the models selected were chosen for simplicity in that all three datasets shared the same model; though it should be noted again that AIC/BIC values were found and that other more aptly suggested models still had very similar values, just slightly smaller.
+
+As for our forecasting, the values for each respective dataset lay within our confidence intervals, but quickly diverged from our forecasted values as the month went on. Ideally, our forecast would be accurate throughout the entire month - due to external factors however (government intervention, variants), this would be quite challenging to do.
+
+Still, our forecasts succesfully allow one to gain some insight into possible paths the data may take in the future.
+
+\newpage
+
+# References
+**R Nought Values:**
+
+https://www.healthline.com/health/r-nought-reproduction-number
+
+**Data Source:**
+
+https://data.ontario.ca/dataset/status-of-covid-19-cases-in-ontario
+
+**Ventilators Available:**
+
+https://www.cbc.ca/news/canada/toronto/covid-19-ontario-hospital-ventilators-1.5523105
+
+**ICU Beds Avaialble:**
+
+https://toronto.citynews.ca/2021/03/29/concerns-raised-over-ontarios-dwindling-supply-of-icu-beds/
+
+**KPSS/Deterministic vs. Non-Deterministic:**
+
+https://www.machinelearningplus.com/time-series/kpss-test-for-stationarity/#:~:text=KPSS%20test%20is%20a%20statistical,function%20and%20in%20practical%20usage.
+
+\newpage
+
+
+# Appendices
+
+## Appendix A: PACF of Cases
+```{r}
+pacf(Stationary[[1]], main=Set[1], sub=ProperSeries[1])
+```
+
+## Appendix B: Ljung-Box Plots
+Displayed in order of each dataset per model (i.e. ARMA(0,1) for Cases, ICU, Vent, then ARMA(0,2) and so on):
+```{r ref.label="Residuals_LJBT"}
+```
+
+\newpage
+
+## Appendix C: Code
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE} 
+```
+
