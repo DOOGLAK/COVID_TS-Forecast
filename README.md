@@ -1,2 +1,2 @@
 # COVID_TS-Forecast
-Project projecting COVID ICU
+A project for projecting COVID cases, ICU, & Ventilator levels. Code is unpolished/optimized.
